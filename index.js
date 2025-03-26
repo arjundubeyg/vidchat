@@ -32,7 +32,7 @@ function start() {
 }
 
 // connect ot server
-const socket = io('http://localhost:8000');
+const socket = io('https://server-vid-chat.onrender.com');
 
 
 // disconnectin event
