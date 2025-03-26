@@ -32,7 +32,7 @@ function start() {
 }
 
 // connect ot server
-const socket = io('https://server-vid-chat.onrender.com');
+const socket = io('https://server-vid-chat.onrender.com/');
 
 
 // disconnectin event
