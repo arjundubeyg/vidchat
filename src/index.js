@@ -10,12 +10,38 @@ let remoteSocket;
 let type;
 let roomid;
 
+// Low-quality video constraints
+const LOW_QUALITY_CONSTRAINTS = {
+  audio: true,
+  video: {
+    width: { ideal: 320 },     // Reduced width
+    height: { ideal: 240 },    // Reduced height
+    frameRate: { max: 15 },    // Lower frame rate
+    aspectRatio: 1.33,         // Standard 4:3 aspect ratio
+    facingMode: 'user',
+    resizeMode: 'crop-and-scale'
+  }
+};
 
-// starts media capture
+// starts media capture with low-quality settings
 function start() {
-  navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+  navigator.mediaDevices.getUserMedia(LOW_QUALITY_CONSTRAINTS)
     .then(stream => {
       if (peer) {
+        // Reduce video bitrate
+        const videoTracks = stream.getVideoTracks();
+        videoTracks.forEach(track => {
+          const parameters = track.getSettings();
+          track.applyConstraints({
+            advanced: [{
+              width: 320,
+              height: 240,
+              frameRate: 15,
+              bitrate: 100000 // Reduced bitrate to 100 kbps
+            }]
+          });
+        });
+
         myVideo.srcObject = stream;
         stream.getTracks().forEach(track => peer.addTrack(track, stream));
 
@@ -23,106 +49,111 @@ function start() {
           strangerVideo.srcObject = e.streams[0];
           strangerVideo.play();
         }
-
       }
     })
     .catch(ex => {
-      console.log(ex);
+      console.error('Media capture error:', ex);
     });
 }
 
-// connect ot server
+// connect to server
 const socket = io('https://server-vid-chat.onrender.com/');
 
-
-// disconnectin event
+// disconnection event
 socket.on('disconnected', () => {
   location.href = `/?disconnect`
 })
 
-
-
-/// --------- Web rtc related ---------
+/// --------- WebRTC related ---------
 
 // Start 
 socket.emit('start', (person) => {
   type = person;
 });
 
-
 // Get remote socket
-
 socket.on('remote-socket', (id) => {
   remoteSocket = id;
 
   // hide the spinner
   document.querySelector('.modal').style.display = 'none';
 
-  // create a peer conncection
-  peer = new RTCPeerConnection();
+  // create a peer connection with optimized configuration
+  const rtcConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ],
+    sdpSemantics: 'unified-plan',
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require'
+  };
 
-  // on negociation needed 
+  peer = new RTCPeerConnection(rtcConfig);
+
+  // on negotiation needed 
   peer.onnegotiationneeded = async e => {
     webrtc();
   }
 
-  // send ice candidates to remotesocket
+  // send ice candidates to remote socket
   peer.onicecandidate = e => {
     socket.emit('ice:send', { candidate: e.candidate, to: remoteSocket });
   }
 
   // start media capture
   start();
-
 });
-
 
 // creates offer if 'type' = p1
 async function webrtc() {
-
   if (type == 'p1') {
-    const offer = await peer.createOffer();
+    const offer = await peer.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true
+    });
+    
+    // Modify SDP to reduce video quality
+    const modifiedSdp = offer.sdp.replace(/a=mid:video\r\n/g, 'a=mid:video\r\nb=AS:100\r\n');
+    offer.sdp = modifiedSdp;
+
     await peer.setLocalDescription(offer);
     socket.emit('sdp:send', { sdp: peer.localDescription });
   }
-
 }
 
-
-// recive sdp sent by remote socket 
+// receive SDP sent by remote socket 
 socket.on('sdp:reply', async ({ sdp, from }) => {
-
   // set remote description 
   await peer.setRemoteDescription(new RTCSessionDescription(sdp));
 
   // if type == p2, create answer
   if (type == 'p2') {
     const ans = await peer.createAnswer();
+    
+    // Modify SDP to reduce video quality
+    const modifiedSdp = ans.sdp.replace(/a=mid:video\r\n/g, 'a=mid:video\r\nb=AS:100\r\n');
+    ans.sdp = modifiedSdp;
+
     await peer.setLocalDescription(ans);
     socket.emit('sdp:send', { sdp: peer.localDescription });
   }
 });
 
-
-// recive ice-candidate form remote socket
+// receive ice-candidate from remote socket
 socket.on('ice:reply', async ({ candidate, from }) => {
   await peer.addIceCandidate(candidate);
 });
 
-
-
-
-/// ----------- Handel Messages Logic -----------
-
+/// ----------- Handle Messages Logic -----------
 
 // get room id
 socket.on('roomid', id => {
   roomid = id;
 })
 
-// handel send button click
+// handle send button click
 button.onclick = e => {
-
   // get input and emit
   let input = document.querySelector('input').value;
   socket.emit('send-message', input, type, roomid);
@@ -142,8 +173,7 @@ button.onclick = e => {
 
 // on get message
 socket.on('get-message', (input, type) => {
-
-  // set recived message from server in chat box
+  // set received message from server in chat box
   let msghtml = `
   <div class="msg">
   <b>Stranger: </b> <span id='msg'>${input}</span>
@@ -151,5 +181,17 @@ socket.on('get-message', (input, type) => {
   `
   document.querySelector('.chat-holder .wrapper')
   .innerHTML += msghtml;
-
 })
+
+// Optional: Handle potential connection errors
+socket.on('connect_error', (error) => {
+  console.error('Connection error:', error);
+  document.querySelector('.modal').innerHTML = 'Connection failed. Please try again.';
+});
+
+// Optional: Handle online users count
+socket.on('online-users', (count) => {
+  if (online) {
+    online.textContent = `Online: ${count}`;
+  }
+});
